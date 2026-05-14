@@ -6,8 +6,18 @@
 import asyncio
 import sys
 import threading
+import urllib.request
+import json
+import webbrowser
 from datetime import datetime
 from queue import Queue, Empty
+from pathlib import Path
+
+# 從 VERSION 檔讀取版本號
+_VERSION_FILE = Path(__file__).parent / "VERSION"
+__version__ = _VERSION_FILE.read_text(encoding="utf-8").strip() if _VERSION_FILE.exists() else "1.0.0"
+
+GITHUB_REPO = "wulove1029/view-bluetooth-broadcast"
 
 try:
     from bleak import BleakScanner
@@ -280,6 +290,37 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 """
 
 
+class UpdateChecker(threading.Thread):
+    """背景執行緒：查詢 GitHub Releases 是否有新版本。"""
+
+    def __init__(self, current_version: str, callback):
+        super().__init__(daemon=True)
+        self._current = current_version
+        self._callback = callback
+
+    def run(self):
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "BLE-Scanner-Updater"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+            latest = data.get("tag_name", "").lstrip("v")
+            html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases/latest")
+            if latest and self._is_newer(latest):
+                self._callback(latest, html_url)
+        except Exception:
+            pass  # 網路失敗靜默忽略
+
+    @staticmethod
+    def _is_newer(latest: str) -> bool:
+        def parse(v):
+            try:
+                return tuple(int(x) for x in v.split("."))
+            except ValueError:
+                return (0,)
+        return parse(latest) > parse(__version__)
+
+
 def _make_bluetooth_icon(size: int = 64) -> QIcon:
     """用 QPainter 繪製藍芽標誌，回傳 QIcon（不需外部檔案）。"""
     px = QPixmap(size, size)
@@ -344,6 +385,9 @@ class BluetoothBroadcastGUI(QMainWindow):
         self._queue_timer.timeout.connect(self._process_queue)
         self._queue_timer.start(100)
 
+        self._update_url: str = ""
+        UpdateChecker(__version__, self._on_update_found).start()
+
     # ── UI 構建 ──────────────────────────────────────────
     def _setup_ui(self):
         central = QWidget()
@@ -384,9 +428,10 @@ class BluetoothBroadcastGUI(QMainWindow):
 
         layout.addStretch()
 
-        version = QLabel("v2.0")
-        version.setObjectName("version_label")
-        layout.addWidget(version)
+        self._version_label = QLabel(f"v{__version__}")
+        self._version_label.setObjectName("version_label")
+        self._version_label.setCursor(Qt.CursorShape.ArrowCursor)
+        layout.addWidget(self._version_label)
         return header
 
     def _build_toolbar(self) -> QWidget:
@@ -752,6 +797,23 @@ class BluetoothBroadcastGUI(QMainWindow):
 
         ins(f"\n  {sep}\n", C["detail_sep"])
         self.detail_text.setTextCursor(cur)
+
+    # ── 自動更新 ─────────────────────────────────────────
+    def _on_update_found(self, latest: str, url: str):
+        self._update_url = url
+        # UpdateChecker 在背景執行緒呼叫，透過 QTimer 切回主執行緒更新 UI
+        QTimer.singleShot(0, lambda: self._show_update_badge(latest))
+
+    def _show_update_badge(self, latest: str):
+        self._version_label.setText(f"v{__version__}  ⬆ v{latest} 可用")
+        self._version_label.setStyleSheet(
+            f"color: #FFD700; background: {C['accent_dark']};"
+            "font-family: Consolas; font-size: 9pt; padding: 3px 8px;"
+            "border-radius: 3px; cursor: pointer;"
+        )
+        self._version_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._version_label.mousePressEvent = lambda _: webbrowser.open(self._update_url)
+        self.log_message(f"發現新版本 v{latest}，點擊標題列版本標籤可前往下載", "ok")
 
     # ── 清除 ─────────────────────────────────────────────
     def clear_devices(self):
