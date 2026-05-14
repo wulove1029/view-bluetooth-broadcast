@@ -32,6 +32,7 @@ EXE_ASSET_NAME = "BLE-Scanner.exe"
 UPDATE_HTTP_HEADERS = {
     "User-Agent": f"BLE-Scanner-Updater/{__version__}",
     "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
 }
 
 
