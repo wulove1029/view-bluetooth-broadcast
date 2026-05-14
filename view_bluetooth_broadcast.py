@@ -90,7 +90,7 @@ def _build_update_script(new_exe: Path, current_exe: Path, current_pid: int) -> 
         'move /Y "%NEW_EXE%" "%CURRENT_EXE%" > nul\r\n'
         "if errorlevel 1 (\r\n"
         "    set /a RETRIES+=1\r\n"
-        "    if %RETRIES% GEQ 30 exit /b 1\r\n"
+        "    if %RETRIES% GEQ 45 exit /b 1\r\n"
         "    timeout /t 1 /nobreak > nul\r\n"
         "    goto replace_retry\r\n"
         ")\r\n"
