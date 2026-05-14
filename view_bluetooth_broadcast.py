@@ -594,13 +594,13 @@ class BluetoothBroadcastGUI(QMainWindow):
 
         lbl = QLabel("掃描日誌")
         lbl.setObjectName("log_title")
+        lbl.setFixedHeight(18)
         layout.addWidget(lbl)
 
         self.log_text = QTextEdit()
         self.log_text.setObjectName("log_text")
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(130)
-        layout.addWidget(self.log_text)
+        layout.addWidget(self.log_text, 1)
         return area
 
     # ── 輔助 ─────────────────────────────────────────────
