@@ -1,0 +1,56 @@
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
+
+import view_bluetooth_broadcast as app
+
+
+class UpdateHttpTests(unittest.TestCase):
+    def test_update_http_get_uses_certifi_without_environment_proxy(self):
+        response = Mock()
+        response.status_code = 200
+
+        with patch("view_bluetooth_broadcast.requests.Session") as session_cls, \
+             patch("view_bluetooth_broadcast._ca_bundle_path", return_value="C:/bundle/cacert.pem"):
+            session = session_cls.return_value
+            session.get.return_value = response
+
+            result = app._update_http_get("https://example.test/releases/latest", timeout=(2, 5))
+
+        self.assertIs(result, response)
+        self.assertIs(session.trust_env, False)
+        session.get.assert_called_once_with(
+            "https://example.test/releases/latest",
+            headers=app.UPDATE_HTTP_HEADERS,
+            timeout=(2, 5),
+            verify="C:/bundle/cacert.pem",
+            stream=False,
+        )
+        response.raise_for_status.assert_called_once_with()
+
+    def test_downloader_uses_update_http_get_for_https_downloads(self):
+        chunks = [b"abc", b"def"]
+        response = Mock()
+        response.headers = {"Content-Length": "6"}
+        response.iter_content.return_value = chunks
+
+        with TemporaryDirectory() as tmp, \
+             patch("view_bluetooth_broadcast._update_http_get", return_value=response) as http_get:
+            progress = Mock()
+            done = Mock()
+            error = Mock()
+            dest = Path(tmp) / "BLE-Scanner.exe"
+
+            downloader = app.UpdateDownloader("https://example.test/BLE-Scanner.exe", dest, progress, done, error)
+            downloader.run()
+
+            http_get.assert_called_once_with("https://example.test/BLE-Scanner.exe", timeout=(5, 30), stream=True)
+            self.assertEqual(dest.read_bytes(), b"abcdef")
+            progress.assert_called_with(100)
+            done.assert_called_once_with(dest)
+            error.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

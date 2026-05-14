@@ -63,11 +63,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller bleak PyQt6
+          pip install pyinstaller -r requirements.txt
 
       - name: Build exe with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name "BLE-Scanner" --add-data "VERSION;." view_bluetooth_broadcast.py
+          pyinstaller --onefile --windowed --name "BLE-Scanner" --add-data "VERSION;." --collect-data certifi view_bluetooth_broadcast.py
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4

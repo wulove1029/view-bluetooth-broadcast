@@ -9,11 +9,12 @@ import subprocess
 import sys
 import tempfile
 import threading
-import urllib.request
-import json
 from datetime import datetime
 from queue import Queue, Empty
 from pathlib import Path
+
+import certifi
+import requests
 
 
 def _resource_dir() -> Path:
@@ -28,6 +29,34 @@ __version__ = _VERSION_FILE.read_text(encoding="utf-8").strip() if _VERSION_FILE
 
 GITHUB_REPO = "wulove1029/view-bluetooth-broadcast"
 EXE_ASSET_NAME = "BLE-Scanner.exe"
+UPDATE_HTTP_HEADERS = {
+    "User-Agent": "BLE-Scanner-Updater",
+    "Accept": "application/vnd.github+json",
+}
+
+
+def _ca_bundle_path() -> str:
+    """Return the CA bundle path in source and PyInstaller onefile builds."""
+    if getattr(sys, "frozen", False):
+        bundled_ca = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "certifi" / "cacert.pem"
+        if bundled_ca.exists():
+            return str(bundled_ca)
+    return certifi.where()
+
+
+def _update_http_get(url: str, timeout: tuple[int, int], stream: bool = False):
+    """HTTPS GET for updater traffic with deterministic certs, proxy, and timeout behavior."""
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get(
+        url,
+        headers=UPDATE_HTTP_HEADERS,
+        timeout=timeout,
+        verify=_ca_bundle_path(),
+        stream=stream,
+    )
+    response.raise_for_status()
+    return response
 
 try:
     from bleak import BleakScanner
@@ -318,17 +347,8 @@ class UpdateChecker(threading.Thread):
     def run(self):
         try:
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "BLE-Scanner-Updater",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
-            # 明確繞過系統 proxy（Windows 上的 WinHTTP/IE proxy 自動偵測常常導致 urllib 卡很久）
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode())
+            resp = _update_http_get(url, timeout=(3, 5))
+            data = resp.json()
             latest = data.get("tag_name", "").lstrip("v")
             if not latest:
                 self._callback("error", "", "", "GitHub 回應沒有 tag_name", self._manual)
@@ -368,20 +388,18 @@ class UpdateDownloader(threading.Thread):
 
     def run(self):
         try:
-            req = urllib.request.Request(self._url, headers={"User-Agent": "BLE-Scanner-Updater"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
-                downloaded = 0
-                chunk_size = 64 * 1024
-                with open(self._dest, "wb") as f:
-                    while True:
-                        chunk = resp.read(chunk_size)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total > 0:
-                            self._progress_cb(int(downloaded * 100 / total))
+            resp = _update_http_get(self._url, timeout=(5, 30), stream=True)
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 64 * 1024
+            with open(self._dest, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        self._progress_cb(int(downloaded * 100 / total))
             self._done_cb(self._dest)
         except Exception as e:
             self._error_cb(str(e))
