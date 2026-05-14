@@ -518,7 +518,7 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.clear_button.clicked.connect(self.clear_devices)
         layout.addWidget(self.clear_button)
 
-        self.update_button = QPushButton("⬆  檢查新版")
+        self.update_button = QPushButton("⬆  線上更新")
         self.update_button.setObjectName("btn_secondary")
         self.update_button.clicked.connect(self.check_for_updates)
         layout.addWidget(self.update_button)
@@ -889,7 +889,7 @@ class BluetoothBroadcastGUI(QMainWindow):
             return
         self._update_check_handled = True
         self.update_button.setEnabled(True)
-        self.update_button.setText("⬆  檢查新版")
+        self.update_button.setText("⬆  線上更新")
         self.log_message("檢查更新逾時（10 秒內未收到 GitHub 回應）", "error")
         QMessageBox.warning(
             self, "檢查更新逾時",
@@ -910,7 +910,7 @@ class BluetoothBroadcastGUI(QMainWindow):
                 return
             self._update_check_handled = True
             self.update_button.setEnabled(True)
-            self.update_button.setText("⬆  檢查新版")
+            self.update_button.setText("⬆  線上更新")
 
         if status == "error":
             self.log_message(f"檢查更新失敗：{error}", "error")
