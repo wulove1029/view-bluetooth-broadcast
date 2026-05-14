@@ -30,7 +30,7 @@ __version__ = _VERSION_FILE.read_text(encoding="utf-8").strip() if _VERSION_FILE
 GITHUB_REPO = "wulove1029/view-bluetooth-broadcast"
 EXE_ASSET_NAME = "BLE-Scanner.exe"
 UPDATE_HTTP_HEADERS = {
-    "User-Agent": "BLE-Scanner-Updater",
+    "User-Agent": f"BLE-Scanner-Updater/{__version__}",
     "Accept": "application/vnd.github+json",
 }
 
