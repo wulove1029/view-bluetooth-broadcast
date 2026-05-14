@@ -67,16 +67,16 @@ class UpdateHttpTests(unittest.TestCase):
             True,
         )
 
-    def test_update_script_waits_for_pyinstaller_processes_before_restart(self):
+    def test_update_script_retries_replace_without_waiting_on_process_ids(self):
         script = app._build_update_script(
             new_exe=Path("C:/Temp/BLE-Scanner-1.0.15.exe"),
             current_exe=Path("C:/Program Files/BLE/BLE-Scanner.exe"),
-            current_pid=111,
         )
 
-        self.assertIn('set "OLD_PID=111"', script)
-        self.assertIn("tasklist /FI", script)
-        self.assertIn(":wait_old_process", script)
+        self.assertNotIn("OLD_PID", script)
+        self.assertNotIn("tasklist", script)
+        self.assertNotIn("find ", script)
+        self.assertNotIn(":wait_old_process", script)
         self.assertNotIn("PARENT_PID", script)
         self.assertNotIn(":wait_parent_process", script)
         self.assertIn(":replace_retry", script)

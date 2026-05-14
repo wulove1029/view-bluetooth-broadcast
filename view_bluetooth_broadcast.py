@@ -65,7 +65,7 @@ def _win_path(path: Path) -> str:
     return str(path).replace("/", "\\")
 
 
-def _build_update_script(new_exe: Path, current_exe: Path, current_pid: int) -> str:
+def _build_update_script(new_exe: Path, current_exe: Path) -> str:
     new_exe_s = _win_path(new_exe)
     current_exe_s = _win_path(current_exe)
     return (
@@ -73,16 +73,8 @@ def _build_update_script(new_exe: Path, current_exe: Path, current_pid: int) -> 
         "chcp 65001 > nul\r\n"
         f'set "NEW_EXE={new_exe_s}"\r\n'
         f'set "CURRENT_EXE={current_exe_s}"\r\n'
-        f'set "OLD_PID={current_pid}"\r\n'
         "\r\n"
-        ":wait_old_process\r\n"
-        'tasklist /FI "PID eq %OLD_PID%" | find "%OLD_PID%" > nul\r\n'
-        "if not errorlevel 1 (\r\n"
-        "    timeout /t 1 /nobreak > nul\r\n"
-        "    goto wait_old_process\r\n"
-        ")\r\n"
-        "\r\n"
-        "timeout /t 2 /nobreak > nul\r\n"
+        "timeout /t 3 /nobreak > nul\r\n"
         'if not exist "%NEW_EXE%" exit /b 1\r\n'
         "set /a RETRIES=0\r\n"
         "\r\n"
@@ -1061,14 +1053,13 @@ class BluetoothBroadcastGUI(QMainWindow):
         bat_content = _build_update_script(
             new_exe=new_exe,
             current_exe=current_exe,
-            current_pid=os.getpid(),
         )
         bat_path.write_text(bat_content, encoding="utf-8")
 
         # 用獨立行程啟動 .bat，讓它在本程式退出後繼續執行
         subprocess.Popen(
             ["cmd", "/c", str(bat_path)],
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
             close_fds=True,
         )
         QApplication.instance().quit()
