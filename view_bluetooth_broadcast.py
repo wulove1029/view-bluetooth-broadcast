@@ -592,7 +592,7 @@ class BluetoothBroadcastGUI(QMainWindow):
         layout.setContentsMargins(10, 6, 10, 8)
         layout.setSpacing(2)
 
-        lbl = QLabel("掃描日誌")
+        lbl = QLabel(f"掃描日誌  ·  v{__version__}")
         lbl.setObjectName("log_title")
         lbl.setFixedHeight(18)
         layout.addWidget(lbl)
