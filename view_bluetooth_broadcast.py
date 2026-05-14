@@ -510,7 +510,7 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.clear_button.clicked.connect(self.clear_devices)
         layout.addWidget(self.clear_button)
 
-        self.update_button = QPushButton("⬆  檢查更新")
+        self.update_button = QPushButton("⬆  檢查新版")
         self.update_button.setObjectName("btn_secondary")
         self.update_button.clicked.connect(self.check_for_updates)
         layout.addWidget(self.update_button)
@@ -884,7 +884,7 @@ class BluetoothBroadcastGUI(QMainWindow):
         # 還原檢查按鈕（若是手動觸發）
         if manual:
             self.update_button.setEnabled(True)
-            self.update_button.setText("⬆  檢查更新")
+            self.update_button.setText("⬆  檢查新版")
 
         if status == "error":
             self.log_message(f"檢查更新失敗：{error}", "error")
