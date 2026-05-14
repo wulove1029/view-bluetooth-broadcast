@@ -4,20 +4,30 @@
 """
 
 import asyncio
+import os
+import subprocess
 import sys
+import tempfile
 import threading
 import urllib.request
 import json
-import webbrowser
 from datetime import datetime
 from queue import Queue, Empty
 from pathlib import Path
 
-# 從 VERSION 檔讀取版本號
-_VERSION_FILE = Path(__file__).parent / "VERSION"
+
+def _resource_dir() -> Path:
+    """回傳資源目錄 — PyInstaller --onefile 模式下指向 _MEIPASS。"""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    return Path(__file__).parent
+
+
+_VERSION_FILE = _resource_dir() / "VERSION"
 __version__ = _VERSION_FILE.read_text(encoding="utf-8").strip() if _VERSION_FILE.exists() else "1.0.0"
 
 GITHUB_REPO = "wulove1029/view-bluetooth-broadcast"
+EXE_ASSET_NAME = "BLE-Scanner.exe"
 
 try:
     from bleak import BleakScanner
@@ -291,7 +301,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 
 class UpdateChecker(threading.Thread):
-    """背景執行緒：查詢 GitHub Releases 是否有新版本。"""
+    """背景執行緒：查詢 GitHub Releases 是否有新版本，並回傳 .exe 下載 URL。"""
 
     def __init__(self, current_version: str, callback):
         super().__init__(daemon=True)
@@ -305,9 +315,14 @@ class UpdateChecker(threading.Thread):
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = json.loads(resp.read().decode())
             latest = data.get("tag_name", "").lstrip("v")
-            html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases/latest")
-            if latest and self._is_newer(latest):
-                self._callback(latest, html_url)
+            if not latest or not self._is_newer(latest):
+                return
+            exe_url = ""
+            for asset in data.get("assets", []):
+                if asset.get("name", "").lower().endswith(".exe"):
+                    exe_url = asset.get("browser_download_url", "")
+                    break
+            self._callback(latest, exe_url)
         except Exception:
             pass  # 網路失敗靜默忽略
 
@@ -319,6 +334,38 @@ class UpdateChecker(threading.Thread):
             except ValueError:
                 return (0,)
         return parse(latest) > parse(__version__)
+
+
+class UpdateDownloader(threading.Thread):
+    """背景執行緒：下載新版 .exe，完成後觸發 callback。"""
+
+    def __init__(self, exe_url: str, dest_path: Path, progress_cb, done_cb, error_cb):
+        super().__init__(daemon=True)
+        self._url = exe_url
+        self._dest = dest_path
+        self._progress_cb = progress_cb
+        self._done_cb = done_cb
+        self._error_cb = error_cb
+
+    def run(self):
+        try:
+            req = urllib.request.Request(self._url, headers={"User-Agent": "BLE-Scanner-Updater"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                chunk_size = 64 * 1024
+                with open(self._dest, "wb") as f:
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            self._progress_cb(int(downloaded * 100 / total))
+            self._done_cb(self._dest)
+        except Exception as e:
+            self._error_cb(str(e))
 
 
 def _make_bluetooth_icon(size: int = 64) -> QIcon:
@@ -799,21 +846,80 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.detail_text.setTextCursor(cur)
 
     # ── 自動更新 ─────────────────────────────────────────
-    def _on_update_found(self, latest: str, url: str):
-        self._update_url = url
-        # UpdateChecker 在背景執行緒呼叫，透過 QTimer 切回主執行緒更新 UI
-        QTimer.singleShot(0, lambda: self._show_update_badge(latest))
+    def _on_update_found(self, latest: str, exe_url: str):
+        """UpdateChecker 在背景執行緒呼叫，切回主執行緒處理。"""
+        self._latest_version = latest
+        self._exe_url = exe_url
+        QTimer.singleShot(0, lambda: self._prompt_update(latest, exe_url))
 
-    def _show_update_badge(self, latest: str):
-        self._version_label.setText(f"v{__version__}  ⬆ v{latest} 可用")
-        self._version_label.setStyleSheet(
-            f"color: #FFD700; background: {C['accent_dark']};"
-            "font-family: Consolas; font-size: 9pt; padding: 3px 8px;"
-            "border-radius: 3px; cursor: pointer;"
+    def _prompt_update(self, latest: str, exe_url: str):
+        """跳出對話框詢問使用者是否立即下載並更新。"""
+        # 非 frozen（從原始碼執行）或非 Windows 環境，不支援自動替換
+        if not getattr(sys, "frozen", False) or sys.platform != "win32" or not exe_url:
+            self._version_label.setText(f"v{__version__}  ⬆ v{latest} 可用")
+            self.log_message(f"發現新版本 v{latest}（請至 GitHub Releases 手動下載）", "ok")
+            return
+
+        self.log_message(f"發現新版本 v{latest}", "ok")
+        reply = QMessageBox.question(
+            self,
+            "發現新版本",
+            f"目前版本：v{__version__}\n最新版本：v{latest}\n\n是否立即下載並自動更新？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
         )
-        self._version_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._version_label.mousePressEvent = lambda _: webbrowser.open(self._update_url)
-        self.log_message(f"發現新版本 v{latest}，點擊標題列版本標籤可前往下載", "ok")
+        if reply == QMessageBox.StandardButton.Yes:
+            self._start_download()
+
+    def _start_download(self):
+        tmp_path = Path(tempfile.gettempdir()) / f"BLE-Scanner-{self._latest_version}.exe"
+        self._version_label.setText("下載中  0%")
+        self.log_message(f"開始下載 v{self._latest_version}...", "info")
+        UpdateDownloader(
+            self._exe_url,
+            tmp_path,
+            progress_cb=lambda pct: QTimer.singleShot(0, lambda p=pct: self._on_download_progress(p)),
+            done_cb=lambda path: QTimer.singleShot(0, lambda p=path: self._on_download_done(p)),
+            error_cb=lambda err: QTimer.singleShot(0, lambda e=err: self._on_download_error(e)),
+        ).start()
+
+    def _on_download_progress(self, pct: int):
+        self._version_label.setText(f"下載中  {pct}%")
+
+    def _on_download_error(self, err: str):
+        self._version_label.setText(f"v{__version__}  ⚠ 更新失敗")
+        self.log_message(f"下載失敗：{err}", "error")
+        QMessageBox.warning(self, "更新失敗", f"下載新版本時發生錯誤：\n{err}")
+
+    def _on_download_done(self, new_exe: Path):
+        """下載完成，產生批次檔取代當前 exe 並重啟。"""
+        self.log_message("下載完成，準備套用更新...", "ok")
+        current_exe = Path(sys.executable)
+        bat_path = Path(tempfile.gettempdir()) / "ble_scanner_update.bat"
+
+        # 批次檔流程：
+        # 1. 等待當前 exe 退出（PID 檢查可省略，用 timeout 即可）
+        # 2. 覆蓋舊 exe
+        # 3. 啟動新 exe
+        # 4. 自我刪除
+        bat_content = (
+            "@echo off\r\n"
+            "chcp 65001 > nul\r\n"
+            "timeout /t 2 /nobreak > nul\r\n"
+            f'move /Y "{new_exe}" "{current_exe}" > nul\r\n'
+            f'start "" "{current_exe}"\r\n'
+            'del "%~f0"\r\n'
+        )
+        bat_path.write_text(bat_content, encoding="utf-8")
+
+        # 用獨立行程啟動 .bat，讓它在本程式退出後繼續執行
+        subprocess.Popen(
+            ["cmd", "/c", str(bat_path)],
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+            close_fds=True,
+        )
+        QApplication.instance().quit()
+        os._exit(0)
 
     # ── 清除 ─────────────────────────────────────────────
     def clear_devices(self):

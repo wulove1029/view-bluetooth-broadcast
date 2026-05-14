@@ -67,16 +67,13 @@ jobs:
 
       - name: Build exe with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name "BLE廣播掃描工具" view_bluetooth_broadcast.py
-
-      - name: Copy VERSION into dist
-        run: copy VERSION dist\VERSION
+          pyinstaller --onefile --windowed --name "BLE-Scanner" --add-data "VERSION;." view_bluetooth_broadcast.py
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
         with:
           name: exe-artifact
-          path: dist/BLE廣播掃描工具.exe
+          path: dist/BLE-Scanner.exe
 
   # ── 第三步：建立 Release 並附上 .exe ────────────────────────
   create-release:
@@ -105,7 +102,7 @@ jobs:
             ### 需求
             - Windows 10 / 11（64-bit）
             - 藍芽 4.0+ 適配器
-          files: BLE廣播掃描工具.exe
+          files: BLE-Scanner.exe
           draft: false
           prerelease: false
         env:
