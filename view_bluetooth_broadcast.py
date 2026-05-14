@@ -318,8 +318,16 @@ class UpdateChecker(threading.Thread):
     def run(self):
         try:
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            req = urllib.request.Request(url, headers={"User-Agent": "BLE-Scanner-Updater"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "BLE-Scanner-Updater",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            # 明確繞過系統 proxy（Windows 上的 WinHTTP/IE proxy 自動偵測常常導致 urllib 卡很久）
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode())
             latest = data.get("tag_name", "").lstrip("v")
             if not latest:
@@ -335,7 +343,7 @@ class UpdateChecker(threading.Thread):
                     break
             self._callback("newer", latest, exe_url, "", self._manual)
         except Exception as e:
-            self._callback("error", "", "", str(e), self._manual)
+            self._callback("error", "", "", f"{type(e).__name__}: {e}", self._manual)
 
     @staticmethod
     def _is_newer(latest: str) -> bool:
@@ -871,7 +879,22 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.log_message("正在檢查更新...", "info")
         self.update_button.setEnabled(False)
         self.update_button.setText("⟳  檢查中...")
+        self._update_check_handled = False
         UpdateChecker(__version__, self._on_update_result, manual=True).start()
+        # 保險絲：10 秒後若 callback 還沒回來，強制復原 UI
+        QTimer.singleShot(10000, self._update_check_timeout)
+
+    def _update_check_timeout(self):
+        if getattr(self, "_update_check_handled", True):
+            return
+        self._update_check_handled = True
+        self.update_button.setEnabled(True)
+        self.update_button.setText("⬆  檢查新版")
+        self.log_message("檢查更新逾時（10 秒內未收到 GitHub 回應）", "error")
+        QMessageBox.warning(
+            self, "檢查更新逾時",
+            "10 秒內未收到 GitHub 回應，請檢查網路後再試。",
+        )
 
     def _on_update_result(self, status: str, latest: str, exe_url: str, error: str, manual: bool):
         """UpdateChecker 在背景執行緒呼叫，透過 QTimer 切回主執行緒。"""
@@ -881,8 +904,11 @@ class BluetoothBroadcastGUI(QMainWindow):
         )
 
     def _handle_update_result(self, status: str, latest: str, exe_url: str, error: str, manual: bool):
-        # 還原檢查按鈕（若是手動觸發）
         if manual:
+            # 若已被保險絲處理過，忽略遲到的結果
+            if getattr(self, "_update_check_handled", False):
+                return
+            self._update_check_handled = True
             self.update_button.setEnabled(True)
             self.update_button.setText("⬆  檢查新版")
 
