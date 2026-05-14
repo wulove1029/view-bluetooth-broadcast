@@ -67,6 +67,23 @@ class UpdateHttpTests(unittest.TestCase):
             True,
         )
 
+    def test_update_script_waits_for_pyinstaller_processes_before_restart(self):
+        script = app._build_update_script(
+            new_exe=Path("C:/Temp/BLE-Scanner-1.0.15.exe"),
+            current_exe=Path("C:/Program Files/BLE/BLE-Scanner.exe"),
+            current_pid=111,
+            parent_pid=222,
+        )
+
+        self.assertIn('set "OLD_PID=111"', script)
+        self.assertIn('set "PARENT_PID=222"', script)
+        self.assertIn("tasklist /FI", script)
+        self.assertIn(":wait_old_process", script)
+        self.assertIn(":wait_parent_process", script)
+        self.assertIn(":replace_retry", script)
+        self.assertIn('set "CURRENT_EXE=C:\\Program Files\\BLE\\BLE-Scanner.exe"', script)
+        self.assertIn('start "" "%CURRENT_EXE%"', script)
+
 
 if __name__ == "__main__":
     unittest.main()

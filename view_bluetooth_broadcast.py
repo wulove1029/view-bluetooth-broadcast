@@ -59,6 +59,53 @@ def _update_http_get(url: str, timeout: tuple[int, int], stream: bool = False):
     response.raise_for_status()
     return response
 
+
+def _win_path(path: Path) -> str:
+    return str(path).replace("/", "\\")
+
+
+def _build_update_script(new_exe: Path, current_exe: Path, current_pid: int, parent_pid: int) -> str:
+    new_exe_s = _win_path(new_exe)
+    current_exe_s = _win_path(current_exe)
+    return (
+        "@echo off\r\n"
+        "chcp 65001 > nul\r\n"
+        f'set "NEW_EXE={new_exe_s}"\r\n'
+        f'set "CURRENT_EXE={current_exe_s}"\r\n'
+        f'set "OLD_PID={current_pid}"\r\n'
+        f'set "PARENT_PID={parent_pid}"\r\n'
+        "\r\n"
+        ":wait_old_process\r\n"
+        'tasklist /FI "PID eq %OLD_PID%" | find "%OLD_PID%" > nul\r\n'
+        "if not errorlevel 1 (\r\n"
+        "    timeout /t 1 /nobreak > nul\r\n"
+        "    goto wait_old_process\r\n"
+        ")\r\n"
+        "\r\n"
+        ":wait_parent_process\r\n"
+        'tasklist /FI "PID eq %PARENT_PID%" | find "%PARENT_PID%" > nul\r\n'
+        "if not errorlevel 1 (\r\n"
+        "    timeout /t 1 /nobreak > nul\r\n"
+        "    goto wait_parent_process\r\n"
+        ")\r\n"
+        "\r\n"
+        "timeout /t 2 /nobreak > nul\r\n"
+        'if not exist "%NEW_EXE%" exit /b 1\r\n'
+        "set /a RETRIES=0\r\n"
+        "\r\n"
+        ":replace_retry\r\n"
+        'move /Y "%NEW_EXE%" "%CURRENT_EXE%" > nul\r\n'
+        "if errorlevel 1 (\r\n"
+        "    set /a RETRIES+=1\r\n"
+        "    if %RETRIES% GEQ 30 exit /b 1\r\n"
+        "    timeout /t 1 /nobreak > nul\r\n"
+        "    goto replace_retry\r\n"
+        ")\r\n"
+        "\r\n"
+        'start "" "%CURRENT_EXE%"\r\n'
+        'del "%~f0"\r\n'
+    )
+
 try:
     from bleak import BleakScanner
     from bleak.backends.device import BLEDevice
@@ -1018,13 +1065,11 @@ class BluetoothBroadcastGUI(QMainWindow):
         # 2. 覆蓋舊 exe
         # 3. 啟動新 exe
         # 4. 自我刪除
-        bat_content = (
-            "@echo off\r\n"
-            "chcp 65001 > nul\r\n"
-            "timeout /t 2 /nobreak > nul\r\n"
-            f'move /Y "{new_exe}" "{current_exe}" > nul\r\n'
-            f'start "" "{current_exe}"\r\n'
-            'del "%~f0"\r\n'
+        bat_content = _build_update_script(
+            new_exe=new_exe,
+            current_exe=current_exe,
+            current_pid=os.getpid(),
+            parent_pid=os.getppid(),
         )
         bat_path.write_text(bat_content, encoding="utf-8")
 
