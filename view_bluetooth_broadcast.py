@@ -301,12 +301,19 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 
 class UpdateChecker(threading.Thread):
-    """背景執行緒：查詢 GitHub Releases 是否有新版本，並回傳 .exe 下載 URL。"""
+    """背景執行緒：查詢 GitHub Releases。callback 簽名 (status, latest, exe_url, error)。
 
-    def __init__(self, current_version: str, callback):
+    status:
+      "newer"     有新版本
+      "uptodate"  已是最新
+      "error"     查詢失敗
+    """
+
+    def __init__(self, current_version: str, callback, manual: bool = False):
         super().__init__(daemon=True)
         self._current = current_version
         self._callback = callback
+        self._manual = manual
 
     def run(self):
         try:
@@ -315,16 +322,20 @@ class UpdateChecker(threading.Thread):
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = json.loads(resp.read().decode())
             latest = data.get("tag_name", "").lstrip("v")
-            if not latest or not self._is_newer(latest):
+            if not latest:
+                self._callback("error", "", "", "GitHub 回應沒有 tag_name", self._manual)
+                return
+            if not self._is_newer(latest):
+                self._callback("uptodate", latest, "", "", self._manual)
                 return
             exe_url = ""
             for asset in data.get("assets", []):
                 if asset.get("name", "").lower().endswith(".exe"):
                     exe_url = asset.get("browser_download_url", "")
                     break
-            self._callback(latest, exe_url)
-        except Exception:
-            pass  # 網路失敗靜默忽略
+            self._callback("newer", latest, exe_url, "", self._manual)
+        except Exception as e:
+            self._callback("error", "", "", str(e), self._manual)
 
     @staticmethod
     def _is_newer(latest: str) -> bool:
@@ -433,7 +444,8 @@ class BluetoothBroadcastGUI(QMainWindow):
         self._queue_timer.start(100)
 
         self._update_url: str = ""
-        UpdateChecker(__version__, self._on_update_found).start()
+        self._update_in_progress: bool = False
+        UpdateChecker(__version__, self._on_update_result, manual=False).start()
 
     # ── UI 構建 ──────────────────────────────────────────
     def _setup_ui(self):
@@ -497,6 +509,11 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.clear_button.setObjectName("btn_secondary")
         self.clear_button.clicked.connect(self.clear_devices)
         layout.addWidget(self.clear_button)
+
+        self.update_button = QPushButton("⬆  檢查更新")
+        self.update_button.setObjectName("btn_secondary")
+        self.update_button.clicked.connect(self.check_for_updates)
+        layout.addWidget(self.update_button)
 
         sep = QFrame()
         sep.setObjectName("v_sep")
@@ -846,21 +863,61 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.detail_text.setTextCursor(cur)
 
     # ── 自動更新 ─────────────────────────────────────────
-    def _on_update_found(self, latest: str, exe_url: str):
-        """UpdateChecker 在背景執行緒呼叫，切回主執行緒處理。"""
-        self._latest_version = latest
-        self._exe_url = exe_url
-        QTimer.singleShot(0, lambda: self._prompt_update(latest, exe_url))
+    def check_for_updates(self):
+        """手動點擊「檢查更新」按鈕觸發。"""
+        if self._update_in_progress:
+            QMessageBox.information(self, "檢查更新", "已有更新作業進行中，請稍候。")
+            return
+        self.log_message("正在檢查更新...", "info")
+        self.update_button.setEnabled(False)
+        self.update_button.setText("⟳  檢查中...")
+        UpdateChecker(__version__, self._on_update_result, manual=True).start()
 
-    def _prompt_update(self, latest: str, exe_url: str):
-        """跳出對話框詢問使用者是否立即下載並更新。"""
-        # 非 frozen（從原始碼執行）或非 Windows 環境，不支援自動替換
-        if not getattr(sys, "frozen", False) or sys.platform != "win32" or not exe_url:
-            self._version_label.setText(f"v{__version__}  ⬆ v{latest} 可用")
-            self.log_message(f"發現新版本 v{latest}（請至 GitHub Releases 手動下載）", "ok")
+    def _on_update_result(self, status: str, latest: str, exe_url: str, error: str, manual: bool):
+        """UpdateChecker 在背景執行緒呼叫，透過 QTimer 切回主執行緒。"""
+        QTimer.singleShot(
+            0,
+            lambda: self._handle_update_result(status, latest, exe_url, error, manual),
+        )
+
+    def _handle_update_result(self, status: str, latest: str, exe_url: str, error: str, manual: bool):
+        # 還原檢查按鈕（若是手動觸發）
+        if manual:
+            self.update_button.setEnabled(True)
+            self.update_button.setText("⬆  檢查更新")
+
+        if status == "error":
+            self.log_message(f"檢查更新失敗：{error}", "error")
+            if manual:
+                QMessageBox.warning(self, "檢查更新失敗", f"無法連線至 GitHub：\n{error}")
             return
 
+        if status == "uptodate":
+            self.log_message(f"已是最新版本 v{__version__}", "ok")
+            if manual:
+                QMessageBox.information(
+                    self, "檢查更新",
+                    f"目前版本 v{__version__} 已是最新版本。",
+                )
+            return
+
+        # status == "newer"
+        self._latest_version = latest
+        self._exe_url = exe_url
         self.log_message(f"發現新版本 v{latest}", "ok")
+
+        # 非 frozen（從原始碼執行）或非 Windows 或沒有 .exe → 不能自動替換
+        if not getattr(sys, "frozen", False) or sys.platform != "win32" or not exe_url:
+            self._version_label.setText(f"v{__version__}  ⬆ v{latest} 可用")
+            msg = (
+                f"目前版本：v{__version__}\n"
+                f"最新版本：v{latest}\n\n"
+                "目前環境不支援自動更新（需為 Windows 打包版）。\n"
+                "請至 GitHub Releases 手動下載。"
+            )
+            QMessageBox.information(self, "發現新版本", msg)
+            return
+
         reply = QMessageBox.question(
             self,
             "發現新版本",
@@ -872,6 +929,8 @@ class BluetoothBroadcastGUI(QMainWindow):
             self._start_download()
 
     def _start_download(self):
+        self._update_in_progress = True
+        self.update_button.setEnabled(False)
         tmp_path = Path(tempfile.gettempdir()) / f"BLE-Scanner-{self._latest_version}.exe"
         self._version_label.setText("下載中  0%")
         self.log_message(f"開始下載 v{self._latest_version}...", "info")
@@ -887,6 +946,8 @@ class BluetoothBroadcastGUI(QMainWindow):
         self._version_label.setText(f"下載中  {pct}%")
 
     def _on_download_error(self, err: str):
+        self._update_in_progress = False
+        self.update_button.setEnabled(True)
         self._version_label.setText(f"v{__version__}  ⚠ 更新失敗")
         self.log_message(f"下載失敗：{err}", "error")
         QMessageBox.warning(self, "更新失敗", f"下載新版本時發生錯誤：\n{err}")
