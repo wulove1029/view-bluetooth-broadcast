@@ -79,6 +79,7 @@ class UpdateHttpTests(unittest.TestCase):
         self.assertNotIn(":wait_old_process", script)
         self.assertNotIn("PARENT_PID", script)
         self.assertNotIn(":wait_parent_process", script)
+        self.assertIn("timeout /t 4 /nobreak > nul", script)
         self.assertIn(":replace_retry", script)
         self.assertIn("if %RETRIES% GEQ 45 exit /b 1", script)
         self.assertIn('set "CURRENT_EXE=C:\\Program Files\\BLE\\BLE-Scanner.exe"', script)

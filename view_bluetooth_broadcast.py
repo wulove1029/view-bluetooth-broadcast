@@ -74,7 +74,7 @@ def _build_update_script(new_exe: Path, current_exe: Path) -> str:
         f'set "NEW_EXE={new_exe_s}"\r\n'
         f'set "CURRENT_EXE={current_exe_s}"\r\n'
         "\r\n"
-        "timeout /t 3 /nobreak > nul\r\n"
+        "timeout /t 4 /nobreak > nul\r\n"
         'if not exist "%NEW_EXE%" exit /b 1\r\n'
         "set /a RETRIES=0\r\n"
         "\r\n"
