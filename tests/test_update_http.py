@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -50,6 +51,21 @@ class UpdateHttpTests(unittest.TestCase):
             progress.assert_called_with(100)
             done.assert_called_once_with(dest)
             error.assert_not_called()
+
+    def test_update_result_uses_qt_signal_for_cross_thread_delivery(self):
+        gui = SimpleNamespace(
+            _update_signals=SimpleNamespace(update_result=SimpleNamespace(emit=Mock()))
+        )
+
+        app.BluetoothBroadcastGUI._on_update_result(gui, "newer", "1.2.3", "https://example.test/app.exe", "", True)
+
+        gui._update_signals.update_result.emit.assert_called_once_with(
+            "newer",
+            "1.2.3",
+            "https://example.test/app.exe",
+            "",
+            True,
+        )
 
 
 if __name__ == "__main__":

@@ -72,7 +72,7 @@ try:
         QLabel, QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit,
         QSplitter, QFrame, QMessageBox, QHeaderView,
     )
-    from PyQt6.QtCore import Qt, QTimer
+    from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
     from PyQt6.QtGui import (
         QFont, QColor, QTextCharFormat, QTextCursor,
         QIcon, QPixmap, QPainter, QPen,
@@ -80,6 +80,13 @@ try:
 except ImportError:
     print("請先安裝 PyQt6 套件：pip install PyQt6")
     sys.exit(1)
+
+
+class UpdateSignals(QObject):
+    update_result = pyqtSignal(str, str, str, str, bool)
+    download_progress = pyqtSignal(int)
+    download_done = pyqtSignal(object)
+    download_error = pyqtSignal(str)
 
 
 # ── 色彩系統 ──────────────────────────────────────────────
@@ -468,6 +475,12 @@ class BluetoothBroadcastGUI(QMainWindow):
         self._queue_timer = QTimer(self)
         self._queue_timer.timeout.connect(self._process_queue)
         self._queue_timer.start(100)
+
+        self._update_signals = UpdateSignals(self)
+        self._update_signals.update_result.connect(self._handle_update_result)
+        self._update_signals.download_progress.connect(self._on_download_progress)
+        self._update_signals.download_done.connect(self._on_download_done)
+        self._update_signals.download_error.connect(self._on_download_error)
 
         self._update_url: str = ""
         self._update_in_progress: bool = False
@@ -915,11 +928,8 @@ class BluetoothBroadcastGUI(QMainWindow):
         )
 
     def _on_update_result(self, status: str, latest: str, exe_url: str, error: str, manual: bool):
-        """UpdateChecker 在背景執行緒呼叫，透過 QTimer 切回主執行緒。"""
-        QTimer.singleShot(
-            0,
-            lambda: self._handle_update_result(status, latest, exe_url, error, manual),
-        )
+        """UpdateChecker 在背景執行緒呼叫，透過 Qt signal 切回主執行緒。"""
+        self._update_signals.update_result.emit(status, latest, exe_url, error, manual)
 
     def _handle_update_result(self, status: str, latest: str, exe_url: str, error: str, manual: bool):
         if manual:
@@ -981,9 +991,9 @@ class BluetoothBroadcastGUI(QMainWindow):
         UpdateDownloader(
             self._exe_url,
             tmp_path,
-            progress_cb=lambda pct: QTimer.singleShot(0, lambda p=pct: self._on_download_progress(p)),
-            done_cb=lambda path: QTimer.singleShot(0, lambda p=path: self._on_download_done(p)),
-            error_cb=lambda err: QTimer.singleShot(0, lambda e=err: self._on_download_error(e)),
+            progress_cb=self._update_signals.download_progress.emit,
+            done_cb=self._update_signals.download_done.emit,
+            error_cb=self._update_signals.download_error.emit,
         ).start()
 
     def _on_download_progress(self, pct: int):
