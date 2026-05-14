@@ -28,7 +28,7 @@ _VERSION_FILE = _resource_dir() / "VERSION"
 __version__ = _VERSION_FILE.read_text(encoding="utf-8").strip() if _VERSION_FILE.exists() else "1.0.0"
 
 GITHUB_REPO = "wulove1029/view-bluetooth-broadcast"
-EXE_ASSET_NAME = "BLE-Scanner.exe"
+EXE_ASSET_NAME = "BLE-Scanner.zip"
 UPDATE_HTTP_HEADERS = {
     "User-Agent": f"BLE-Scanner-Updater/{__version__}",
     "Accept": "application/vnd.github+json",
@@ -65,29 +65,21 @@ def _win_path(path: Path) -> str:
     return str(path).replace("/", "\\")
 
 
-def _build_update_script(new_exe: Path, current_exe: Path) -> str:
-    new_exe_s = _win_path(new_exe)
-    current_exe_s = _win_path(current_exe)
+def _build_update_script(zip_path: Path, install_dir: Path, exe_path: Path) -> str:
+    """產生更新用批次檔：解壓 zip 覆蓋 install_dir，然後重啟 exe。"""
+    zip_s = _win_path(zip_path)
+    dir_s = _win_path(install_dir)
+    exe_s = _win_path(exe_path)
     return (
         "@echo off\r\n"
         "chcp 65001 > nul\r\n"
-        f'set "NEW_EXE={new_exe_s}"\r\n'
-        f'set "CURRENT_EXE={current_exe_s}"\r\n'
-        "\r\n"
-        "timeout /t 4 /nobreak > nul\r\n"
-        'if not exist "%NEW_EXE%" exit /b 1\r\n'
-        "set /a RETRIES=0\r\n"
-        "\r\n"
-        ":replace_retry\r\n"
-        'move /Y "%NEW_EXE%" "%CURRENT_EXE%" > nul\r\n'
-        "if errorlevel 1 (\r\n"
-        "    set /a RETRIES+=1\r\n"
-        "    if %RETRIES% GEQ 45 exit /b 1\r\n"
-        "    timeout /t 1 /nobreak > nul\r\n"
-        "    goto replace_retry\r\n"
-        ")\r\n"
-        "\r\n"
-        'start "" "%CURRENT_EXE%"\r\n'
+        "timeout /t 3 /nobreak > nul\r\n"
+        # 用 PowerShell 解壓，覆蓋目標資料夾
+        f'powershell -NoProfile -Command "'
+        f'Expand-Archive -Path \'{zip_s}\' -DestinationPath \'{dir_s}\' -Force'
+        f'"\r\n'
+        f'start "" "{exe_s}"\r\n'
+        f'del "{zip_s}"\r\n'
         'del "%~f0"\r\n'
     )
 
@@ -398,7 +390,7 @@ class UpdateChecker(threading.Thread):
                 return
             exe_url = ""
             for asset in data.get("assets", []):
-                if asset.get("name", "").lower().endswith(".exe"):
+                if asset.get("name", "").lower().endswith(".zip"):
                     exe_url = asset.get("browser_download_url", "")
                     break
             self._callback("newer", latest, exe_url, "", self._manual)
@@ -1018,7 +1010,7 @@ class BluetoothBroadcastGUI(QMainWindow):
     def _start_download(self):
         self._update_in_progress = True
         self.update_button.setEnabled(False)
-        tmp_path = Path(tempfile.gettempdir()) / f"BLE-Scanner-{self._latest_version}.exe"
+        tmp_path = Path(tempfile.gettempdir()) / f"BLE-Scanner-{self._latest_version}.zip"
         self._version_label.setText("下載中  0%")
         self.log_message(f"開始下載 v{self._latest_version}...", "info")
         UpdateDownloader(
@@ -1039,24 +1031,19 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.log_message(f"下載失敗：{err}", "error")
         QMessageBox.warning(self, "更新失敗", f"下載新版本時發生錯誤：\n{err}")
 
-    def _on_download_done(self, new_exe: Path):
-        """下載完成，產生批次檔取代當前 exe 並重啟。"""
+    def _on_download_done(self, zip_path: Path):
+        """下載完成，產生批次檔解壓覆蓋安裝目錄並重啟。"""
         self.log_message("下載完成，準備套用更新...", "ok")
         current_exe = Path(sys.executable)
+        # onedir 模式：exe 在 BLE-Scanner/ 資料夾內，install_dir 為其父目錄
+        install_dir = current_exe.parent
         bat_path = Path(tempfile.gettempdir()) / "ble_scanner_update.bat"
-
-        # 批次檔流程：
-        # 1. 等待當前 exe 退出（PID 檢查可省略，用 timeout 即可）
-        # 2. 覆蓋舊 exe
-        # 3. 啟動新 exe
-        # 4. 自我刪除
         bat_content = _build_update_script(
-            new_exe=new_exe,
-            current_exe=current_exe,
+            zip_path=zip_path,
+            install_dir=install_dir,
+            exe_path=current_exe,
         )
         bat_path.write_text(bat_content, encoding="utf-8")
-
-        # 用獨立行程啟動 .bat，讓它在本程式退出後繼續執行
         subprocess.Popen(
             ["cmd", "/c", str(bat_path)],
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,

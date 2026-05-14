@@ -65,28 +65,32 @@ jobs:
         run: |
           pip install pyinstaller -r requirements.txt
 
-      - name: Build exe with PyInstaller
+      - name: Build with PyInstaller (onedir)
         run: |
-          pyinstaller --onefile --windowed --name "BLE-Scanner" --add-data "VERSION;." --collect-data certifi view_bluetooth_broadcast.py
+          pyinstaller --onedir --windowed --name "BLE-Scanner" --add-data "VERSION;." --collect-data certifi view_bluetooth_broadcast.py
 
-      - name: Upload exe artifact
+      - name: Zip dist folder
+        run: |
+          Compress-Archive -Path dist\BLE-Scanner\* -DestinationPath dist\BLE-Scanner.zip
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: exe-artifact
-          path: dist/BLE-Scanner.exe
+          path: dist/BLE-Scanner.zip
 
-  # ── 第三步：建立 Release 並附上 .exe ────────────────────────
+  # ── 第三步：建立 Release 並附上 zip ─────────────────────────
   create-release:
     runs-on: ubuntu-latest
     needs: [bump-version, build-exe]
 
     steps:
-      - name: Download exe artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: exe-artifact
 
-      - name: Create GitHub Release with exe
+      - name: Create GitHub Release with zip
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.bump-version.outputs.new_version }}
@@ -97,12 +101,14 @@ jobs:
             由 GitHub Actions 自動產生。
 
             ### 下載
-            - **BLE廣播掃描工具.exe** — Windows 免安裝執行檔（需要藍芽適配器）
+            - **BLE-Scanner.zip** — 解壓後執行 `BLE-Scanner.exe`（需要藍芽適配器）
+
+            > ⚠️ 改用資料夾模式打包（onedir），解決防毒軟體誤刪暫存 DLL 的問題。
 
             ### 需求
             - Windows 10 / 11（64-bit）
             - 藍芽 4.0+ 適配器
-          files: BLE-Scanner.exe
+          files: BLE-Scanner.zip
           draft: false
           prerelease: false
         env:
