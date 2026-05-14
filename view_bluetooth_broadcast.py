@@ -33,6 +33,7 @@ UPDATE_HTTP_HEADERS = {
     "User-Agent": f"BLE-Scanner-Updater/{__version__}",
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
+    "Cache-Control": "no-cache",
 }
 
 
