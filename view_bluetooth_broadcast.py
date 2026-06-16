@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import csv
 import os
 import subprocess
 import sys
@@ -95,7 +96,7 @@ try:
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QLabel, QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit,
-        QSplitter, QFrame, QMessageBox, QHeaderView,
+        QSplitter, QFrame, QMessageBox, QHeaderView, QFileDialog,
     )
     from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
     from PyQt6.QtGui import (
@@ -203,6 +204,15 @@ QLabel#device_count {{
     font-size: 11pt;
     font-weight: bold;
     padding: 2px 10px;
+    border-radius: 3px;
+}}
+QLabel#record_badge {{
+    background: {C["danger_bg"]};
+    color: {C["danger"]};
+    font-family: "Microsoft JhengHei UI";
+    font-size: 10pt;
+    font-weight: bold;
+    padding: 2px 8px;
     border-radius: 3px;
 }}
 
@@ -495,6 +505,10 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.scanning = False
         self._row_count = 0
 
+        self.is_recording = False
+        self.record_buffer: list = []
+        self.record_total = 0
+
         self._setup_ui()
 
         self._queue_timer = QTimer(self)
@@ -574,6 +588,12 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.clear_button.clicked.connect(self.clear_devices)
         layout.addWidget(self.clear_button)
 
+        self.record_button = QPushButton("●  開始錄製")
+        self.record_button.setObjectName("btn_secondary")
+        self.record_button.setToolTip("勾選裝置（MAC 前核取方塊,可複選）後,錄製其廣播封包並可匯出 CSV")
+        self.record_button.clicked.connect(self.toggle_recording)
+        layout.addWidget(self.record_button)
+
         self.update_button = QPushButton("⬆  線上更新")
         self.update_button.setObjectName("btn_secondary")
         self.update_button.clicked.connect(self.check_for_updates)
@@ -590,6 +610,11 @@ class BluetoothBroadcastGUI(QMainWindow):
         self.status_badge = QLabel("  待機  ")
         self.status_badge.setObjectName("status_badge_idle")
         layout.addWidget(self.status_badge)
+
+        self.record_badge = QLabel("")
+        self.record_badge.setObjectName("record_badge")
+        self.record_badge.setVisible(False)
+        layout.addWidget(self.record_badge)
 
         layout.addStretch()
 
@@ -806,7 +831,8 @@ class BluetoothBroadcastGUI(QMainWindow):
     # ── 裝置更新 ─────────────────────────────────────────
     def _update_device(self, device: BLEDevice, advertisement_data: AdvertisementData):
         address = device.address
-        current_time = datetime.now().strftime("%H:%M:%S")
+        now = datetime.now()
+        current_time = now.strftime("%H:%M:%S")
         name = device.name or advertisement_data.local_name or "—"
         rssi = advertisement_data.rssi
         rssi_str = f"{rssi} dBm"
@@ -821,6 +847,8 @@ class BluetoothBroadcastGUI(QMainWindow):
 
         if is_new:
             item = QTreeWidgetItem([address, name, rssi_str, current_time])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Unchecked)
             item.setTextAlignment(2, Qt.AlignmentFlag.AlignCenter)
             item.setTextAlignment(3, Qt.AlignmentFlag.AlignCenter)
             item.setData(0, Qt.ItemDataRole.UserRole, address)
@@ -828,14 +856,20 @@ class BluetoothBroadcastGUI(QMainWindow):
             self._row_count += 1
             self.log_message(f"新裝置：{name}  ({address})  {rssi_str}", "new")
         else:
+            item = None
             for i in range(self.device_tree.topLevelItemCount()):
-                item = self.device_tree.topLevelItem(i)
-                if item and item.data(0, Qt.ItemDataRole.UserRole) == address:
-                    item.setText(0, address)
-                    item.setText(1, name)
-                    item.setText(2, rssi_str)
-                    item.setText(3, current_time)
+                node = self.device_tree.topLevelItem(i)
+                if node and node.data(0, Qt.ItemDataRole.UserRole) == address:
+                    node.setText(0, address)
+                    node.setText(1, name)
+                    node.setText(2, rssi_str)
+                    node.setText(3, current_time)
+                    item = node
                     break
+
+        # 錄製中：若此裝置已被勾選,捕捉這一筆廣播封包
+        if self.is_recording and item is not None and item.checkState(0) == Qt.CheckState.Checked:
+            self._capture_packet(now, address, name, advertisement_data)
 
         self.device_count_label.setText(str(len(self.devices)))
 
@@ -1052,8 +1086,150 @@ class BluetoothBroadcastGUI(QMainWindow):
         QApplication.instance().quit()
         os._exit(0)
 
+    # ── 錄製廣播封包 ─────────────────────────────────────
+    def toggle_recording(self):
+        if self.is_recording:
+            self.stop_recording()
+        else:
+            self.start_recording()
+
+    def _checked_addresses(self) -> list:
+        result = []
+        for i in range(self.device_tree.topLevelItemCount()):
+            item = self.device_tree.topLevelItem(i)
+            if item and item.checkState(0) == Qt.CheckState.Checked:
+                result.append(item.data(0, Qt.ItemDataRole.UserRole))
+        return result
+
+    def start_recording(self):
+        targets = self._checked_addresses()
+        if not targets:
+            QMessageBox.information(
+                self, "開始錄製",
+                "請先在左側裝置列表勾選要錄製的裝置\n（MAC 地址前的核取方塊,可複選）。",
+            )
+            return
+
+        if not self.scanning:
+            self.start_scan()
+            self.log_message("錄製需要掃描中,已自動開始掃描", "info")
+
+        self.is_recording = True
+        self.record_buffer = []
+        self.record_total = 0
+
+        self.record_button.setText("■  停止錄製")
+        self.record_button.setObjectName("btn_danger")
+        self.record_button.setStyleSheet(STYLESHEET)
+        self.record_badge.setText("● 錄製中 · 0 筆")
+        self.record_badge.setVisible(True)
+
+        names = "、".join(self.devices.get(a, {}).get("name", a) or a for a in targets)
+        self.log_message(f"開始錄製 {len(targets)} 個裝置：{names}", "ok")
+
+    def _capture_packet(self, ts: datetime, address: str, name: str, adv: AdvertisementData):
+        company_hex, raw_bytes = self._primary_manufacturer(adv.manufacturer_data)
+        self.record_buffer.append({
+            "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S.") + f"{ts.microsecond // 1000:03d}",
+            "address": address,
+            "name": name,
+            "rssi_dbm": adv.rssi,
+            "tx_power": "" if adv.tx_power is None else adv.tx_power,
+            "service_uuids": ";".join(adv.service_uuids) if adv.service_uuids else "",
+            "mfr_company_id": company_hex,
+            "mfr_len": len(raw_bytes),
+            "mfr_bytes": raw_bytes,
+            "service_data": self._fmt_service_data(adv.service_data),
+        })
+        self.record_total += 1
+        self.record_badge.setText(f"● 錄製中 · {self.record_total} 筆")
+
+    @staticmethod
+    def _primary_manufacturer(mfr: dict):
+        """回傳 (company_id_hex, raw_bytes_list)。
+
+        廣播封包幾乎都只有一家 Company ID;若有多家,取第一家拆成位元組,
+        company_id 欄位則列出全部以免遺漏。
+        """
+        if not mfr:
+            return "", []
+        items = list(mfr.items())
+        _, first_data = items[0]
+        raw_bytes = list(first_data) if isinstance(first_data, (bytes, bytearray)) else []
+        company_hex = ";".join(f"{cid:04X}" for cid, _ in items)
+        return company_hex, raw_bytes
+
+    @staticmethod
+    def _fmt_service_data(sd: dict) -> str:
+        if not sd:
+            return ""
+        parts = []
+        for uuid, data in sd.items():
+            hex_data = data.hex() if isinstance(data, (bytes, bytearray)) else str(data)
+            parts.append(f"{uuid}:{hex_data}")
+        return ";".join(parts)
+
+    def stop_recording(self):
+        self.is_recording = False
+        self.record_button.setText("●  開始錄製")
+        self.record_button.setObjectName("btn_secondary")
+        self.record_button.setStyleSheet(STYLESHEET)
+        self.record_badge.setVisible(False)
+
+        count = len(self.record_buffer)
+        if count == 0:
+            self.log_message("已停止錄製,本次沒有捕捉到任何封包", "info")
+            QMessageBox.information(
+                self, "停止錄製",
+                "本次錄製沒有捕捉到任何封包。\n\n請確認：\n• 掃描進行中\n• 勾選的裝置確實有在廣播",
+            )
+            return
+
+        default_name = f"ble_record_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "儲存錄製封包", default_name, "CSV 檔 (*.csv)",
+        )
+        if not path:
+            self.log_message(f"已停止錄製,{count} 筆封包暫存於記憶體（未儲存）", "info")
+            return
+
+        try:
+            self._write_csv(Path(path))
+        except Exception as e:
+            self.log_message(f"儲存失敗：{e}", "error")
+            QMessageBox.warning(self, "儲存失敗", f"寫入 CSV 時發生錯誤：\n{e}")
+            return
+
+        self.log_message(f"已儲存 {count} 筆封包至 {path}", "ok")
+        QMessageBox.information(
+            self, "錄製完成",
+            f"已儲存 {count} 筆廣播封包至：\n{path}",
+        )
+
+    def _write_csv(self, path: Path):
+        # 依本次錄到最長的 Manufacturer Data 位元組數,動態產生 mfr_b00、mfr_b01… 欄位
+        max_len = max((len(r["mfr_bytes"]) for r in self.record_buffer), default=0)
+        byte_cols = [f"mfr_b{i:02d}" for i in range(max_len)]
+        fieldnames = (
+            ["timestamp", "address", "name", "rssi_dbm", "tx_power", "service_uuids",
+             "mfr_company_id", "mfr_len"]
+            + byte_cols
+            + ["service_data"]
+        )
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            for rec in self.record_buffer:
+                row = {k: v for k, v in rec.items() if k != "mfr_bytes"}
+                for i, b in enumerate(rec["mfr_bytes"]):
+                    row[f"mfr_b{i:02d}"] = f"{b:02x}"
+                writer.writerow(row)
+
     # ── 清除 ─────────────────────────────────────────────
     def clear_devices(self):
+        if self.is_recording:
+            QMessageBox.information(self, "清除列表", "錄製進行中無法清除,請先停止錄製。")
+            return
         self.devices.clear()
         self._row_count = 0
         self.device_tree.clear()
